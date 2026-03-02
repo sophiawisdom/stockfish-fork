@@ -19,6 +19,7 @@
 #include "evaluate.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
@@ -37,6 +38,10 @@
 
 namespace Stockfish {
 
+namespace {
+std::atomic<uint64_t> g_nnue_evals{0};
+}
+
 // Returns a static, purely materialistic evaluation of the position from
 // the point of view of the side to move. It can be divided by PawnValue to get
 // an approximation of the material advantage on the board in terms of pawns.
@@ -48,6 +53,10 @@ int Eval::simple_eval(const Position& pos) {
 
 bool Eval::use_smallnet(const Position& pos) { return std::abs(simple_eval(pos)) > 962; }
 
+uint64_t Eval::nnue_evals_total() { return g_nnue_evals.load(std::memory_order_relaxed); }
+
+void Eval::reset_nnue_evals_total() { g_nnue_evals.store(0, std::memory_order_relaxed); }
+
 // Evaluate is the evaluator for the outer world. It returns a static evaluation
 // of the position from the point of view of the side to move.
 Value Eval::evaluate(const Eval::NNUE::Networks&    networks,
@@ -55,6 +64,8 @@ Value Eval::evaluate(const Eval::NNUE::Networks&    networks,
                      Eval::NNUE::AccumulatorStack&  accumulators,
                      Eval::NNUE::AccumulatorCaches& caches,
                      int                            optimism) {
+
+    g_nnue_evals.fetch_add(1, std::memory_order_relaxed);
 
     assert(!pos.checkers());
 

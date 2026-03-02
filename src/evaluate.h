@@ -19,6 +19,7 @@
 #ifndef EVALUATE_H_INCLUDED
 #define EVALUATE_H_INCLUDED
 
+#include <cstdint>
 #include <string>
 
 #include "types.h"
@@ -46,6 +47,8 @@ std::string trace(Position& pos, const Eval::NNUE::Networks& networks);
 
 int   simple_eval(const Position& pos);
 bool  use_smallnet(const Position& pos);
+uint64_t nnue_evals_total();
+void     reset_nnue_evals_total();
 Value evaluate(const NNUE::Networks&          networks,
                const Position&                pos,
                Eval::NNUE::AccumulatorStack&  accumulators,
