@@ -26,6 +26,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #include "memory.h"
@@ -61,6 +62,8 @@ class OptionalThreadToNumaNodeBinder {
             return NumaReplicatedAccessToken(numaId);
     }
 
+    NumaReplicatedAccessToken token_without_binding() const { return NumaReplicatedAccessToken(numaId); }
+
    private:
     const NumaConfig* numaConfig;
     NumaIndex         numaId;
@@ -78,7 +81,8 @@ class Thread {
            size_t,
            size_t,
            size_t,
-           OptionalThreadToNumaNodeBinder);
+           OptionalThreadToNumaNodeBinder,
+           bool inlineMode = false);
     virtual ~Thread();
 
     void idle_loop();
@@ -103,8 +107,9 @@ class Thread {
     std::mutex                mutex;
     std::condition_variable   cv;
     size_t                    idx, idxInNuma, totalNuma, nthreads;
+    bool                      inlineMode = false;
     bool                      exit = false, searching = true;  // Set before starting std::thread
-    NativeThread              stdThread;
+    std::optional<NativeThread> stdThread;
     NumaReplicatedAccessToken numaAccessToken;
 };
 
@@ -140,6 +145,7 @@ class ThreadPool {
     void   set(const NumaConfig& numaConfig,
                Search::SharedState,
                const Search::SearchManager::UpdateContext&);
+    void   set_main_thread_inline(bool enabled) { mainThreadInline = enabled; }
 
     Search::SearchManager* main_manager();
     Thread*                main_thread() const { return threads.front().get(); }
@@ -166,6 +172,7 @@ class ThreadPool {
     StateListPtr                         setupStates;
     std::vector<std::unique_ptr<Thread>> threads;
     std::vector<NumaIndex>               boundThreadToNumaNode;
+    bool                                 mainThreadInline = false;
 
     uint64_t accumulate(std::atomic<uint64_t> Search::Worker::* member) const {
 

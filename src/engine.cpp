@@ -238,6 +238,8 @@ void Engine::set_numa_config_from_option(const std::string& o) {
     threads.ensure_network_replicated();
 }
 
+void Engine::set_main_thread_inline(bool enabled) { threads.set_main_thread_inline(enabled); }
+
 void Engine::resize_threads() {
     threads.wait_for_search_finished();
     threads.set(numaContext.get_numa_config(), {options, threads, tt, sharedHists, networks},

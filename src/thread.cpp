@@ -47,12 +47,24 @@ Thread::Thread(Search::SharedState&                    sharedState,
                size_t                                  n,
                size_t                                  numaN,
                size_t                                  totalNumaCount,
-               OptionalThreadToNumaNodeBinder          binder) :
+               OptionalThreadToNumaNodeBinder          binder,
+               bool                                    inlineMode_) :
     idx(n),
     idxInNuma(numaN),
     totalNuma(totalNumaCount),
     nthreads(sharedState.options["Threads"]),
-    stdThread(&Thread::idle_loop, this) {
+    inlineMode(inlineMode_) {
+
+    if (inlineMode)
+    {
+        numaAccessToken = binder.token_without_binding();
+        worker          = make_unique_large_page<Search::Worker>(
+          sharedState, std::move(sm), n, idxInNuma, totalNuma, numaAccessToken);
+        searching = false;
+        return;
+    }
+
+    stdThread.emplace(&Thread::idle_loop, this);
 
     wait_for_search_finished();
 
@@ -75,25 +87,40 @@ Thread::~Thread() {
 
     assert(!searching);
 
+    if (inlineMode)
+        return;
+
     exit = true;
     start_searching();
-    stdThread.join();
+    stdThread->join();
 }
 
 // Wakes up the thread that will start the search
 void Thread::start_searching() {
     assert(worker != nullptr);
+    if (inlineMode)
+    {
+        worker->start_searching();
+        return;
+    }
     run_custom_job([this]() { worker->start_searching(); });
 }
 
 // Clears the histories for the thread worker (usually before a new game)
 void Thread::clear_worker() {
     assert(worker != nullptr);
+    if (inlineMode)
+    {
+        worker->clear();
+        return;
+    }
     run_custom_job([this]() { worker->clear(); });
 }
 
 // Blocks on the condition variable until the thread has finished searching
 void Thread::wait_for_search_finished() {
+    if (inlineMode)
+        return;
 
     std::unique_lock<std::mutex> lk(mutex);
     cv.wait(lk, [&] { return !searching; });
@@ -101,6 +128,13 @@ void Thread::wait_for_search_finished() {
 
 // Launching a function in the thread
 void Thread::run_custom_job(std::function<void()> f) {
+    if (inlineMode)
+    {
+        if (f)
+            f();
+        return;
+    }
+
     {
         std::unique_lock<std::mutex> lk(mutex);
         cv.wait(lk, [&] { return !searching; });
@@ -227,10 +261,12 @@ void ThreadPool::set(const NumaConfig&                           numaConfig,
                 // on the same NUMA node.
                 auto binder = doBindThreads ? OptionalThreadToNumaNodeBinder(numaConfig, numaId)
                                                        : OptionalThreadToNumaNodeBinder(numaId);
+                const bool useInline = mainThreadInline && requested == 1 && threadId == 0;
 
                 threads.emplace_back(std::make_unique<Thread>(sharedState, std::move(manager),
                                                                          threadId, counts[numaId]++,
-                                                                         threadsPerNode[numaId], binder));
+                                                                         threadsPerNode[numaId], binder,
+                                                                         useInline));
             };
 
             // Ensure the worker thread inherits the intended NUMA affinity at creation.
