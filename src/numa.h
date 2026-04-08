@@ -1516,6 +1516,15 @@ class LazyNumaReplicatedSystemWide: public NumaReplicatedBase {
         prepare_replicate_from(std::move(source));
     }
 
+    template<typename SourceFactoryT>
+    LazyNumaReplicatedSystemWide(NumaReplicationContext& ctx,
+                                 std::unique_ptr<T>&&    identity,
+                                 SourceFactoryT&&        source_factory) :
+        NumaReplicatedBase(ctx) {
+        prepare_replicate_from_existing_or_source(std::move(identity),
+                                                  std::forward<SourceFactoryT>(source_factory));
+    }
+
     LazyNumaReplicatedSystemWide(const LazyNumaReplicatedSystemWide&) = delete;
     LazyNumaReplicatedSystemWide(LazyNumaReplicatedSystemWide&& other) noexcept :
         NumaReplicatedBase(std::move(other)),
@@ -1631,6 +1640,43 @@ class LazyNumaReplicatedSystemWide: public NumaReplicatedBase {
         {
             assert(cfg.num_numa_nodes() == 1);
             instances.emplace_back(SystemWideSharedConstant<T>(*source, get_discriminator(0)));
+        }
+    }
+
+    template<typename SourceFactoryT>
+    void prepare_replicate_from_existing_or_source(std::unique_ptr<T>&& identity,
+                                                   SourceFactoryT&&      source_factory) {
+        instances.clear();
+
+        auto init_first_instance = [this, &identity, &source_factory]() {
+            const std::size_t discriminator = get_discriminator(0);
+
+            assert(identity != nullptr);
+            if (auto existing =
+                  SystemWideSharedConstant<T>::try_open_existing(*identity, discriminator))
+            {
+                instances.emplace_back(std::move(*existing));
+                return;
+            }
+
+            auto source = std::invoke(std::forward<SourceFactoryT>(source_factory));
+            instances.emplace_back(SystemWideSharedConstant<T>(*source, discriminator));
+        };
+
+        const NumaConfig& cfg = get_numa_config();
+        if (cfg.requires_memory_replication())
+        {
+            assert(cfg.num_numa_nodes() > 0);
+
+            cfg.execute_on_numa_node(0, init_first_instance);
+
+            // Prepare others for lazy init.
+            instances.resize(cfg.num_numa_nodes());
+        }
+        else
+        {
+            assert(cfg.num_numa_nodes() == 1);
+            init_first_instance();
         }
     }
 };

@@ -61,9 +61,7 @@ struct alignas(CacheLineSize) Accumulator {
 struct AccumulatorCaches {
 
     template<typename Networks>
-    AccumulatorCaches(const Networks& networks) {
-        clear(networks);
-    }
+    AccumulatorCaches(const Networks& networks) { clear(networks); }
 
     template<IndexType Size>
     struct alignas(CacheLineSize) Cache {

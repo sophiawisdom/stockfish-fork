@@ -23,6 +23,7 @@
 #include <deque>
 #include <iosfwd>
 #include <memory>
+#include <mutex>
 #include <ostream>
 #include <sstream>
 #include <string_view>
@@ -58,14 +59,48 @@ int            MaxThreads = std::max(1024, 4 * int(get_hardware_concurrency()));
 // PR#6526). The user can always explicitly override this behavior.
 constexpr NumaAutoPolicy DefaultNumaPolicy = BundledL3Policy{32};
 
-Engine::Engine(std::optional<std::string> path) :
+namespace {
+const NN::Networks& cached_default_networks() {
+    static std::once_flag                init_once;
+    static std::unique_ptr<NN::Networks> cached;
+
+    std::call_once(init_once, []() {
+        auto networks =
+          std::make_unique<NN::Networks>(NN::EvalFile{EvalFileDefaultNameBig, "None", ""},
+                                         NN::EvalFile{EvalFileDefaultNameSmall, "None", ""});
+
+        networks->big.load("", "");
+        networks->small.load("", "");
+        cached = std::move(networks);
+    });
+
+    return *cached;
+}
+
+std::unique_ptr<NN::Networks> default_network_identity() {
+    return std::make_unique<NN::Networks>(
+      NN::EvalFile{EvalFileDefaultNameBig, EvalFileDefaultNameBig, ""},
+      NN::EvalFile{EvalFileDefaultNameSmall, EvalFileDefaultNameSmall, ""});
+}
+
+LazyNumaReplicatedSystemWide<NN::Networks> make_default_networks_cached(NumaReplicationContext& ctx) {
+    return LazyNumaReplicatedSystemWide<NN::Networks>(
+      ctx, default_network_identity(),
+      []() { return std::make_unique<NN::Networks>(cached_default_networks()); });
+}
+
+}  // namespace
+
+Engine::Engine(std::optional<std::string> path, bool inlineMainThread) :
     binaryDirectory(path ? CommandLine::get_binary_directory(*path) : ""),
     numaContext(NumaConfig::from_system(DefaultNumaPolicy)),
     states(new std::deque<StateInfo>(1)),
     threads(),
-    networks(numaContext, get_default_networks()) {
+    networks(make_default_networks_cached(numaContext)) {
 
     pos.set(StartFEN, false, &states->back());
+
+    threads.set_main_thread_inline(inlineMainThread);
 
     options.add(  //
       "Debug Log File", Option("", [](const Option& o) {
@@ -87,7 +122,7 @@ Engine::Engine(std::optional<std::string> path) :
       }));
 
     options.add(  //
-      "Hash", Option(16, 1, MaxHashMB, [this](const Option& o) {
+      "Hash", Option(2, 1, MaxHashMB, [this](const Option& o) {
           set_tt_size(o);
           return std::nullopt;
       }));
@@ -295,15 +330,7 @@ void Engine::verify_networks() const {
 }
 
 std::unique_ptr<Eval::NNUE::Networks> Engine::get_default_networks() const {
-
-    auto networks_ =
-      std::make_unique<NN::Networks>(NN::EvalFile{EvalFileDefaultNameBig, "None", ""},
-                                     NN::EvalFile{EvalFileDefaultNameSmall, "None", ""});
-
-    networks_->big.load(binaryDirectory, "");
-    networks_->small.load(binaryDirectory, "");
-
-    return networks_;
+    return std::make_unique<NN::Networks>(cached_default_networks());
 }
 
 void Engine::load_big_network(const std::string& file) {

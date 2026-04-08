@@ -232,6 +232,15 @@ class SearchManager: public ISearchManager {
 
 
     SearchManager(const UpdateContext& updateContext) :
+        originalTimeAdjust(-1),
+        callsCnt(0),
+        ponder(false),
+        iterValue{},
+        previousTimeReduction(0.85),
+        bestPreviousScore(VALUE_INFINITE),
+        bestPreviousAverageScore(VALUE_INFINITE),
+        stopOnPonderhit(false),
+        id(0),
         updates(updateContext) {}
 
     void check_time(Search::Worker& worker) override;
@@ -296,6 +305,7 @@ class Worker {
 
     TTMoveHistory    ttMoveHistory;
     SharedHistories& sharedHistory;
+    bool             skipFirstSharedHistoryClear = true;
 
    private:
     void iterative_deepening();

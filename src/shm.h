@@ -157,6 +157,10 @@ enum class SystemWideSharedConstantAllocationStatus {
     SharedMemory
 };
 
+struct OpenExistingOnlyTag {};
+
+inline constexpr OpenExistingOnlyTag open_existing_only{};
+
 #if defined(_WIN32)
 
 inline std::string GetLastErrorAsString(DWORD error) {
@@ -210,6 +214,9 @@ class SharedMemoryBackend {
 
         initialize(shm_name, value);
     }
+
+    SharedMemoryBackend(OpenExistingOnlyTag, [[maybe_unused]] const std::string& shm_name) :
+        status(Status::NotInitialized) {}
 
     bool is_valid() const { return status == Status::Success; }
 
@@ -417,6 +424,9 @@ class SharedMemoryBackend {
     SharedMemoryBackend(const std::string& shm_name, const T& value) :
         shm1(shm::create_shared<T>(shm_name, value)) {}
 
+    SharedMemoryBackend(OpenExistingOnlyTag, const std::string& shm_name) :
+        shm1(shm::open_existing_shared<T>(shm_name)) {}
+
     void* get() const {
         const T* ptr = &shm1->get();
         return reinterpret_cast<void*>(const_cast<T*>(ptr));
@@ -458,6 +468,8 @@ class SharedMemoryBackend {
 
     SharedMemoryBackend([[maybe_unused]] const std::string& shm_name,
                         [[maybe_unused]] const T&           value) {}
+
+    SharedMemoryBackend(OpenExistingOnlyTag, [[maybe_unused]] const std::string& shm_name) {}
 
     void* get() const { return nullptr; }
 
@@ -518,20 +530,7 @@ struct SystemWideSharedConstant {
         return buf;
     }
 
-   public:
-    // We can't run the destructor because it may be in a completely different process.
-    // The object stored must also be obviously in-line but we can't check for that, other than some basic checks that cover most cases.
-    static_assert(std::is_trivially_destructible_v<T>);
-    static_assert(std::is_trivially_move_constructible_v<T>);
-    static_assert(std::is_trivially_copy_constructible_v<T>);
-
-    SystemWideSharedConstant() = default;
-
-
-    // Content is addressed by its hash. An additional discriminator can be added to account for differences
-    // that are not present in the content, for example NUMA node allocation.
-    SystemWideSharedConstant(const T& value, std::size_t discriminator = 0) {
-        std::size_t content_hash    = std::hash<T>{}(value);
+    static std::string make_shm_name(std::size_t content_hash, std::size_t discriminator) {
         std::size_t executable_hash = hash_string(getExecutablePathHash());
 
         char buf[1024];
@@ -550,6 +549,23 @@ struct SystemWideSharedConstant {
         }
 #endif
 
+        return shm_name;
+    }
+
+   public:
+    // We can't run the destructor because it may be in a completely different process.
+    // The object stored must also be obviously in-line but we can't check for that, other than some basic checks that cover most cases.
+    static_assert(std::is_trivially_destructible_v<T>);
+    static_assert(std::is_trivially_move_constructible_v<T>);
+    static_assert(std::is_trivially_copy_constructible_v<T>);
+
+    SystemWideSharedConstant() = default;
+
+
+    // Content is addressed by its hash. An additional discriminator can be added to account for differences
+    // that are not present in the content, for example NUMA node allocation.
+    SystemWideSharedConstant(const T& value, std::size_t discriminator = 0) {
+        std::string shm_name = make_shm_name(std::hash<T>{}(value), discriminator);
         SharedMemoryBackend<T> shm_backend(shm_name, value);
 
         if (shm_backend.is_valid())
@@ -560,6 +576,19 @@ struct SystemWideSharedConstant {
         {
             backend = SharedMemoryBackendFallback<T>(shm_name, value);
         }
+    }
+
+    static std::optional<SystemWideSharedConstant> try_open_existing(
+      const T& value, std::size_t discriminator = 0) {
+        SystemWideSharedConstant result;
+        std::string              shm_name = make_shm_name(std::hash<T>{}(value), discriminator);
+        SharedMemoryBackend<T>   shm_backend(open_existing_only, shm_name);
+
+        if (!shm_backend.is_valid())
+            return std::nullopt;
+
+        result.backend = std::move(shm_backend);
+        return result;
     }
 
     SystemWideSharedConstant(const SystemWideSharedConstant&)            = delete;

@@ -183,7 +183,6 @@ static size_t next_power_of_two(uint64_t count) { return count > 1 ? (2ULL << ms
 void ThreadPool::set(const NumaConfig&                           numaConfig,
                      Search::SharedState                         sharedState,
                      const Search::SearchManager::UpdateContext& updateContext) {
-
     if (threads.size() > 0)  // destroy any existing thread(s)
     {
         main_thread()->wait_for_search_finished();
@@ -197,6 +196,20 @@ void ThreadPool::set(const NumaConfig&                           numaConfig,
 
     if (requested > 0)  // create new thread(s)
     {
+        if (mainThreadInline && requested == 1)
+        {
+            sharedState.sharedHistories.clear();
+            sharedState.sharedHistories.try_emplace(0, next_power_of_two(1));
+
+            boundThreadToNumaNode.clear();
+            auto manager = std::unique_ptr<Search::ISearchManager>(
+              std::make_unique<Search::SearchManager>(updateContext));
+            auto binder = OptionalThreadToNumaNodeBinder(0);
+            threads.emplace_back(std::make_unique<Thread>(sharedState, std::move(manager), 0, 0,
+                                                          1, binder, true));
+            return;
+        }
+
         // Binding threads may be problematic when there's multiple NUMA nodes and
         // multiple Stockfish instances running. In particular, if each instance
         // runs a single thread then they would all be mapped to the first NUMA node.

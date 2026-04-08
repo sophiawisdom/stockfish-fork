@@ -166,6 +166,8 @@ class SharedMemory: public detail::SharedMemoryBase {
     static_assert(!std::is_pointer_v<T>, "T cannot be a pointer type");
 
    private:
+    inline static std::atomic<uint64_t> next_sentinel_id_{1};
+
     std::string        name_;
     int                fd_         = -1;
     void*              mapped_ptr_ = nullptr;
@@ -329,6 +331,80 @@ class SharedMemory: public detail::SharedMemoryBase {
         }
     }
 
+    [[nodiscard]] bool open_existing() noexcept {
+        detail::CleanupHooks::ensure_registered();
+
+        bool retried_stale = false;
+
+        while (true)
+        {
+            if (is_open())
+                return false;
+
+            fd_ = shm_open(name_.c_str(), O_RDWR, 0666);
+            if (fd_ == -1)
+                return false;
+
+            if (!lock_file(LOCK_EX))
+            {
+                ::close(fd_);
+                reset();
+                return false;
+            }
+
+            bool invalid_header = false;
+            bool success        = setup_existing_region(invalid_header);
+
+            if (!success)
+            {
+                if (mapped_ptr_)
+                    unmap_region();
+                unlock_file();
+                ::close(fd_);
+                reset();
+
+                if (invalid_header && !retried_stale)
+                {
+                    retried_stale = true;
+                    continue;
+                }
+                return false;
+            }
+
+            if (!lock_shared_mutex())
+            {
+                unmap_region();
+                unlock_file();
+                ::close(fd_);
+                reset();
+
+                if (!retried_stale)
+                {
+                    retried_stale = true;
+                    continue;
+                }
+                return false;
+            }
+
+            if (!create_sentinel_file_locked())
+            {
+                unlock_shared_mutex();
+                unmap_region();
+                unlock_file();
+                ::close(fd_);
+                reset();
+                return false;
+            }
+
+            header_ptr_->ref_count.fetch_add(1, std::memory_order_acq_rel);
+
+            unlock_shared_mutex();
+            unlock_file();
+            detail::SharedMemoryRegistry::register_instance(this);
+            return true;
+        }
+    }
+
     void close(bool skip_unmap = false) noexcept override {
         if (fd_ == -1 && mapped_ptr_ == nullptr)
             return;
@@ -441,10 +517,12 @@ class SharedMemory: public detail::SharedMemoryBase {
         }
     }
 
-    std::string sentinel_full_path(pid_t pid) const {
+    std::string sentinel_full_path(pid_t pid, uint64_t instance_id) const {
         char buf[1024];
         // See above snprintf comment
-        std::snprintf(buf, sizeof(buf), "/dev/shm/%s.%ld", sentinel_base_.c_str(), long(pid));
+        std::snprintf(
+          buf, sizeof(buf), "/dev/shm/%s.%ld.%" PRIu64, sentinel_base_.c_str(), long(pid),
+          instance_id);
         return buf;
     }
 
@@ -464,10 +542,13 @@ class SharedMemory: public detail::SharedMemoryBase {
             return false;
 
         const pid_t self_pid = getpid();
-        sentinel_path_       = sentinel_full_path(self_pid);
 
-        for (int attempt = 0; attempt < 2; ++attempt)
+        for (int attempt = 0; attempt < 4; ++attempt)
         {
+            uint64_t instance_id =
+              next_sentinel_id_.fetch_add(1, std::memory_order_relaxed);
+            sentinel_path_ = sentinel_full_path(self_pid, instance_id);
+
             int fd = ::open(sentinel_path_.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
             if (fd != -1)
             {
@@ -475,10 +556,8 @@ class SharedMemory: public detail::SharedMemoryBase {
                 return true;
             }
 
-            if (errno == EEXIST)
-            {
-                ::unlink(sentinel_path_.c_str());
-                decrement_refcount_relaxed();
+            if (errno == EEXIST) {
+                sentinel_path_.clear();
                 continue;
             }
 
@@ -573,7 +652,9 @@ class SharedMemory: public detail::SharedMemoryBase {
             if (name.rfind(prefix, 0) != 0)
                 continue;
 
-            auto  pid_str = name.substr(prefix.size());
+            auto suffix = name.substr(prefix.size());
+            auto dot    = suffix.find('.');
+            auto pid_str = suffix.substr(0, dot);
             char* end     = nullptr;
             long  value   = std::strtol(pid_str.c_str(), &end, 10);
             if (!end || *end != '\0')
@@ -663,6 +744,15 @@ template<typename T>
                                                            const T& initial_value) noexcept {
     SharedMemory<T> shm(name);
     if (shm.open(initial_value))
+        return shm;
+    return std::nullopt;
+}
+
+template<typename T>
+[[nodiscard]] std::optional<SharedMemory<T>> open_existing_shared(
+  const std::string& name) noexcept {
+    SharedMemory<T> shm(name);
+    if (shm.open_existing())
         return shm;
     return std::nullopt;
 }

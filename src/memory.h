@@ -140,6 +140,30 @@ memory_allocator(ALLOC_FUNC alloc_func, size_t num) {
     return reinterpret_cast<ElementType*>(raw_memory + array_offset);
 }
 
+template<typename T, typename ALLOC_FUNC>
+inline std::enable_if_t<std::is_array_v<T>, std::remove_extent_t<T>*>
+memory_allocator_no_init(ALLOC_FUNC alloc_func, size_t num) {
+    using ElementType = std::remove_extent_t<T>;
+
+    const size_t array_offset = std::max(sizeof(size_t), alignof(ElementType));
+    char*        raw_memory =
+      reinterpret_cast<char*>(alloc_func(array_offset + num * sizeof(ElementType)));
+    ASSERT_ALIGNED(raw_memory, alignof(T));
+
+    new (raw_memory) size_t(num);
+
+    // For implicit-lifetime element types, the allocation itself is enough to
+    // begin lifetime in C++20, so we can skip the per-element placement-new
+    // loop and let callers initialize the backing storage directly.
+    if constexpr (!std::is_trivially_copyable_v<ElementType>)
+    {
+        for (size_t i = 0; i < num; ++i)
+            new (raw_memory + array_offset + i * sizeof(ElementType)) ElementType;
+    }
+
+    return reinterpret_cast<ElementType*>(raw_memory + array_offset);
+}
+
 //
 //
 // aligned large page unique ptr
@@ -182,6 +206,18 @@ std::enable_if_t<std::is_array_v<T>, LargePagePtr<T>> make_unique_large_page(siz
                   "aligned_large_pages_alloc() may fail for such a big alignment requirement of T");
 
     ElementType* memory = memory_allocator<T>(aligned_large_pages_alloc, num);
+
+    return LargePagePtr<T>(memory);
+}
+
+template<typename T>
+std::enable_if_t<std::is_array_v<T>, LargePagePtr<T>> make_unique_large_page_no_init(size_t num) {
+    using ElementType = std::remove_extent_t<T>;
+
+    static_assert(alignof(ElementType) <= 4096,
+                  "aligned_large_pages_alloc() may fail for such a big alignment requirement of T");
+
+    ElementType* memory = memory_allocator_no_init<T>(aligned_large_pages_alloc, num);
 
     return LargePagePtr<T>(memory);
 }

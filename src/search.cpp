@@ -586,12 +586,15 @@ void Search::Worker::undo_null_move(Position& pos) { pos.undo_null_move(); }
 void Search::Worker::clear() {
     mainHistory.fill(0);
     captureHistory.fill(-689);
+    ttMoveHistory = 0;
 
     // Each thread is responsible for clearing their part of shared history
-    sharedHistory.correctionHistory.clear_range(0, numaThreadIdx, numaTotal);
-    sharedHistory.pawnHistory.clear_range(-1238, numaThreadIdx, numaTotal);
-
-    ttMoveHistory = 0;
+    if (!skipFirstSharedHistoryClear)
+    {
+        sharedHistory.correctionHistory.clear_range(0, numaThreadIdx, numaTotal);
+        sharedHistory.pawnHistory.clear_range(-1238, numaThreadIdx, numaTotal);
+    }
+    skipFirstSharedHistoryClear = false;
 
     for (auto& to : continuationCorrectionHistory)
         for (auto& h : to)

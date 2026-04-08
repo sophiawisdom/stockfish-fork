@@ -102,7 +102,7 @@ template<typename T, int SizeMultiplier>
 struct DynStats {
     explicit DynStats(size_t s) {
         size = s * SizeMultiplier;
-        data = make_unique_large_page<T[]>(size);
+        data = make_unique_large_page_no_init<T[]>(size);
     }
     // Sets all values in the range to 0
     void clear_range(int value, size_t threadIdx, size_t numaTotal) {
@@ -112,6 +112,28 @@ struct DynStats {
 
         while (start < end)
             data[start++].fill(value);
+    }
+    void initialize_all_fast(int value) {
+        static_assert(std::is_trivially_copyable_v<T>,
+                      "Fast initialization requires trivially copyable elements");
+        if (size == 0)
+            return;
+
+        T pattern{};
+        pattern.fill(value);
+
+        auto*       dst         = reinterpret_cast<std::byte*>(data.get());
+        const size_t elemBytes  = sizeof(T);
+        const size_t totalBytes = size * elemBytes;
+
+        std::memcpy(dst, &pattern, elemBytes);
+        size_t filled = elemBytes;
+        while (filled < totalBytes)
+        {
+            const size_t copyBytes = std::min(filled, totalBytes - filled);
+            std::memcpy(dst + filled, dst, copyBytes);
+            filled += copyBytes;
+        }
     }
     size_t get_size() const { return size; }
     T&     operator[](size_t index) {
@@ -224,6 +246,8 @@ struct SharedHistories {
         correctionHistory(threadCount),
         pawnHistory(threadCount) {
         assert((threadCount & (threadCount - 1)) == 0 && threadCount != 0);
+        correctionHistory.initialize_all_fast(0);
+        pawnHistory.initialize_all_fast(-1238);
         sizeMinus1         = correctionHistory.get_size() - 1;
         pawnHistSizeMinus1 = pawnHistory.get_size() - 1;
     }

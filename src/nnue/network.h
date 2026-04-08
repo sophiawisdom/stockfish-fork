@@ -72,6 +72,13 @@ class Network {
     bool save(const std::optional<std::string>& filename) const;
 
     std::size_t get_content_hash() const;
+    std::size_t get_path_identity_hash() const {
+        std::size_t h = 0;
+        hash_combine(h, evalFile.defaultName);
+        hash_combine(h, evalFile.current);
+        hash_combine(h, static_cast<int>(embeddedType));
+        return h;
+    }
 
     NetworkOutput evaluate(const Position&                         pos,
                            AccumulatorStack&                       accumulatorStack,
@@ -144,7 +151,7 @@ template<typename ArchT, typename FeatureTransformerT>
 struct std::hash<Stockfish::Eval::NNUE::Network<ArchT, FeatureTransformerT>> {
     std::size_t operator()(
       const Stockfish::Eval::NNUE::Network<ArchT, FeatureTransformerT>& network) const noexcept {
-        return network.get_content_hash();
+        return network.get_path_identity_hash();
     }
 };
 
